@@ -6,10 +6,17 @@ export type GeneratedSiteFile = {
   content: string;
 };
 
+export type GeneratedSiteUsage = {
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+};
+
 export type GeneratedSiteSpec = {
   files: GeneratedSiteFile[];
   dockerfile: string;
   startCommand?: string;
+  usage?: GeneratedSiteUsage | null;
 };
 
 type GenerateInput = {
@@ -184,6 +191,20 @@ export async function generateSiteWithKimi(input: GenerateInput ): Promise<Gener
 
     const normalized = rawContent.replace(/```/g, "").trim();
 
+    const usageRaw = data?.usage;
+    const usage: GeneratedSiteUsage | null =
+      usageRaw && (typeof usageRaw === "object")
+        ? {
+            prompt_tokens: Number(usageRaw.prompt_tokens ?? 0),
+            completion_tokens: Number(usageRaw.completion_tokens ?? 0),
+            total_tokens: Number(usageRaw.total_tokens ?? 0),
+          }
+        : null;
+
+    if (usage) {
+      console.log("[generate] usage", usage);
+    }
+
     let spec: GeneratedSiteSpec;
 
     try {
@@ -215,6 +236,10 @@ export async function generateSiteWithKimi(input: GenerateInput ): Promise<Gener
 
     if (!spec.files.length || !spec.files.some((f) => f.path === "index.html" && f.content.trim())) {
       throw new Error("Kimi response missing valid index.html");
+    }
+
+    if (usage) {
+      spec.usage = usage;
     }
 
     console.log("[generate] Kimi request done", { fileCount: spec.files.length });

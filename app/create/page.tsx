@@ -4,6 +4,7 @@ import { useState } from "react";
 import { useMutation } from "@tanstack/react-query";
 import { z } from "zod";
 import { createProject, type CreatePayload } from "../../api/create.api";
+import Popup from "reactjs-popup";
 
 const formSchema = z.object({
   subdomain: z
@@ -38,27 +39,53 @@ export default function Create() {
   const [liveUrl, setLiveUrl] = useState<string | null>(null);
   const [deployError, setDeployError] = useState<string | null>(null);
   const [generationError, setGenerationError] = useState<string | null>(null);
+  const [popupOpen, setPopupOpen] = useState(false);
 
   const mutation = useMutation({
     mutationFn: async (payload: CreatePayload) => createProject(payload),
-    onSuccess: (data: {
-      deploy?: { liveUrl: string };
-      generationError?: string | null;
-      deployError?: string | null;
+    onSuccess: (response: {
+      success: boolean;
+      status: number;
+      message: string;
+      data: { subdomain: string; companyWebsite: string; clientRequirements: string };
+      deploy: {
+        liveUrl: string | null;
+        port: number | null;
+        nginxConfigured: boolean;
+        generationError: string | null;
+        deployError: string | null;
+      } | null;
+      stats: {
+        prompt_tokens: number;
+        completion_tokens: number;
+        total_tokens: number;
+      } | null;
+      time: {
+        total_time: number;
+      };
     }) => {
+      const deploy = response.deploy;
       setFormError(null);
-      setLiveUrl(data.deploy?.liveUrl ?? null);
-      setDeployError(data.deployError ?? null);
-      setGenerationError(data.generationError ?? null);
+      setLiveUrl(deploy?.liveUrl ?? null);
+      setDeployError(deploy?.deployError ?? null);
+      setGenerationError(deploy?.generationError ?? null);
       setFormSuccess(
-        data.deploy?.liveUrl
+        deploy?.liveUrl
           ? "Project created and deployed."
-          : data.deployError
+          : deploy?.deployError
             ? "Project generated but deploy failed."
-            : data.generationError
+            : deploy?.generationError
               ? "Scraping done; generation failed."
               : "Project created."
       );
+
+      if (deploy?.liveUrl) {
+        try {
+          window.open(deploy.liveUrl, "_blank", "noopener,noreferrer");
+        } catch {
+          setPopupOpen(true);
+        }
+      }
     },
     onError: (error: unknown) => {
       setFormError(error instanceof Error ? error.message : "Something went wrong.");
@@ -152,6 +179,32 @@ export default function Create() {
 
   return (
     <div className="bg-[#F7F4EA] min-h-screen flex items-center justify-center px-4">
+      <Popup
+        open={popupOpen}
+        closeOnDocumentClick={false}
+        closeOnEscape={false}
+        modal
+        nested
+        contentStyle={{
+          borderRadius: "0.75rem",
+          padding: "1rem 1.25rem",
+          border: "1px solid #F97316",
+          boxShadow: "0 10px 30px rgba(0,0,0,0.15)",
+        }}
+      >
+        <div
+          className="text-sm text-[#7C2D12] bg-[#FFF7ED] rounded-xl"
+          onMouseEnter={() => setPopupOpen(false)}
+        >
+          <p className="font-medium">Popup blocked by browser.</p>
+          <p className="mt-1 text-xs text-[#9A3412]">
+            Please allow popups for this site or click the "Live at" link below to open your generated site.
+          </p>
+          <p className="mt-2 text-[11px] text-[#B45309]">
+            Hover over this message once you&apos;re done to dismiss it.
+          </p>
+        </div>
+      </Popup>
       <div className="w-full max-w-xl rounded-2xl bg-white shadow-[0_10px_40px_rgba(0,0,0,0.08)] p-8">
         <h1 className="mb-6 text-2xl font-semibold text-[#1F2933]">Create project</h1>
         <form onSubmit={handleSubmit} className="space-y-4">
