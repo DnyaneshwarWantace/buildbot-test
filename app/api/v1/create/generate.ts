@@ -22,6 +22,80 @@ const KIMI_FETCH_TIMEOUT_MS = 15 * 60 * 1000; // 15 minutes
 const KIMI_API_BASE =
   process.env.KIMI_API_BASE || process.env.MOONSHOT_BASE_URL || "https://api.moonshot.cn/v1";
 
+const STATIC_DOCKERFILE = `FROM nginx:alpine
+COPY . /usr/share/nginx/html
+EXPOSE 80
+`;
+
+const SECTION_FILES = ["index.html", "styles.css", "script.js", "README.md"] as const;
+
+function extractSection(content: string, filename: string): string | null {
+  const escaped = filename.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const regex = new RegExp(
+    `===\\s*${escaped}\\s*===\\s*([\\s\\S]*?)(?=\\n===|$)`,
+    "i",
+  );
+  const m = content.match(regex);
+  return m ? m[1].trim() : null;
+}
+
+function parseSectionFormat(rawContent: string): GeneratedSiteSpec {
+  const content = rawContent.replace(/```/g, "").trim();
+
+  for (const name of SECTION_FILES) {
+    const headerRegex = new RegExp(`===\\s*${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*===`, "i");
+    if (!headerRegex.test(content)) {
+      throw new Error(`AI output missing section: ${name}`);
+    }
+  }
+
+  const files: GeneratedSiteFile[] = [];
+
+  for (const path of SECTION_FILES) {
+    const fileContent = extractSection(content, path);
+    if (path === "index.html" && !fileContent) {
+      throw new Error("index.html not generated properly");
+    }
+    files.push({ path, content: fileContent ?? "" });
+  }
+
+  return {
+    files,
+    dockerfile: STATIC_DOCKERFILE,
+  };
+}
+
+function buildUserPrompt(input: GenerateInput): string {
+  const crawlText = input.sites
+    .map(
+      (s) =>
+        `URL: ${s.url}\n\nSTRUCTURE (nested text + links):\n${s.structure}`,
+    )
+    .join("\n\n---\n\n");
+
+  return `Company: ${input.request.companyName ?? "—"}
+Company website: ${input.request.companyWebsite}
+Client requirements: ${input.request.clientRequirements}
+
+SCRAPED WEBSITE CONTENT (use this to rebuild and improve the site):
+
+${crawlText}
+
+Generate exactly 4 files in this format. Do NOT include markdown code blocks or triple backticks. Return ONLY the sections below:
+
+=== index.html ===
+<html content here, use Tailwind CDN, responsive>
+
+=== styles.css ===
+<css content>
+
+=== script.js ===
+<js content>
+
+=== README.md ===
+<readme content>`;
+}
+
 export async function generateSiteWithKimi(input: GenerateInput ): Promise<GeneratedSiteSpec> {
     const apiKey = process.env.MOONSHOT_API_KEY;
     if (!apiKey) throw new Error("MOONSHOT_API_KEY is not set");
@@ -34,17 +108,17 @@ export async function generateSiteWithKimi(input: GenerateInput ): Promise<Gener
 
     const payload = {
       model: process.env.KIMI_MODEL || "moonshotai/kimi-k2.5",
-      temperature: 0.6,
-      max_tokens: 15000,
+      temperature: 0.7,
+      max_tokens: 20000,
       messages: [
         {
           role: "system",
           content:
-            "You are an AI that generates full web projects. Respond ONLY with strict JSON of the form {\"files\":[{\"path\":\"index.html\",\"content\":\"...\"}],\"dockerfile\":\"...\",\"startCommand\":\"...\"} and no other text.",
+            "You are an expert senior frontend developer. Rebuild and improve the website using the scraped content provided. Create a modern SaaS marketing site with header, hero, features, CTA, footer. Use Tailwind CDN in index.html. Responsive, strong typography. Output ONLY the 4 sections in the exact format requested (=== filename === then content). No explanations, no markdown fences.",
         },
         {
           role: "user",
-          content: JSON.stringify(input),
+          content: buildUserPrompt(input),
         },
       ],
     };
@@ -93,35 +167,42 @@ export async function generateSiteWithKimi(input: GenerateInput ): Promise<Gener
       throw new Error("Kimi response missing content");
     }
 
-    let parsed: any;
+    const normalized = rawContent.replace(/```/g, "").trim();
+
+    let spec: GeneratedSiteSpec;
 
     try {
-      parsed = JSON.parse(rawContent);
-    } catch (error) {
-      console.log("[generate] Kimi response invalid JSON");
-      throw new Error("Failed to parse Kimi JSON response");
+      const parsed = JSON.parse(normalized);
+      if (Array.isArray(parsed.files) && typeof parsed.dockerfile === "string") {
+        const files: GeneratedSiteFile[] = parsed.files.map((file: any) => ({
+          path: String(file.path),
+          content: String(file.content ?? ""),
+        }));
+        spec = {
+          files,
+          dockerfile: parsed.dockerfile,
+          startCommand: parsed.startCommand ? String(parsed.startCommand) : undefined,
+        };
+        console.log("[generate] Parsed JSON response", { fileCount: files.length });
+      } else {
+        spec = parseSectionFormat(normalized);
+        console.log("[generate] Parsed section format (fallback)", { fileCount: spec.files.length });
+      }
+    } catch {
+      try {
+        spec = parseSectionFormat(normalized);
+        console.log("[generate] Parsed section format (fallback)", { fileCount: spec.files.length });
+      } catch (sectionErr) {
+        console.log("[generate] Kimi response invalid JSON and missing section format");
+        throw new Error("Failed to parse Kimi response (expected JSON or === section === format)");
+      }
     }
 
-    if (!Array.isArray(parsed.files) || typeof parsed.dockerfile !== "string") {
-      console.log("[generate] Kimi response missing required fields", { hasFiles: Array.isArray(parsed?.files), hasDockerfile: typeof parsed?.dockerfile });
-      throw new Error("Kimi response missing required fields");
+    if (!spec.files.length || !spec.files.some((f) => f.path === "index.html" && f.content.trim())) {
+      throw new Error("Kimi response missing valid index.html");
     }
 
-    const files: GeneratedSiteFile[] = parsed.files.map((file: any) => ({
-      path: String(file.path),
-      content: String(file.content ?? ""),
-    }));
-
-    const spec: GeneratedSiteSpec = {
-      files,
-      dockerfile: parsed.dockerfile,
-    };
-
-    if (parsed.startCommand) {
-      spec.startCommand = String(parsed.startCommand);
-    }
-
-    console.log("[generate] Kimi request done", { fileCount: files.length });
+    console.log("[generate] Kimi request done", { fileCount: spec.files.length });
     return spec;
 }
 
