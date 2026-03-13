@@ -17,10 +17,9 @@ type GenerateInput = {
   sites: StrippedSite[];
 };
 
-const KIMI_FETCH_TIMEOUT_MS = 15 * 60 * 1000; // 15 minutes
+const KIMI_FETCH_TIMEOUT_MS = 20 * 60 * 1000;
 
-const KIMI_API_BASE =
-  process.env.KIMI_API_BASE || process.env.MOONSHOT_BASE_URL || "https://api.moonshot.cn/v1";
+const KIMI_API_BASE = process.env.KIMI_API_BASE || process.env.MOONSHOT_BASE_URL || "https://api.moonshot.cn/v1";
 
 const STATIC_DOCKERFILE = `FROM nginx:alpine
 COPY . /usr/share/nginx/html
@@ -71,34 +70,51 @@ function buildUserPrompt(input: GenerateInput): string {
       (s) =>
         `URL: ${s.url}\n\nSTRUCTURE (nested text + links):\n${s.structure}`,
     )
-    .join("\n\n---\n\n");
+    .join("\n\n---\n\n")
+    .trim();
 
-  return `Company: ${input.request.companyName ?? "—"}
-Company website: ${input.request.companyWebsite}
-Client requirements: ${input.request.clientRequirements}
+  const hasCrawl = crawlText.length > 0;
 
-SCRAPED WEBSITE CONTENT (use this to rebuild and improve the site):
+  const lines: string[] = [];
+  lines.push(`Company: ${input.request.companyName ?? "—"}`);
+  if (!hasCrawl) {
+    lines.push(`Company website: ${input.request.companyWebsite}`);
+  }
+  lines.push(`Client requirements: ${input.request.clientRequirements}`);
+  lines.push("");
+  lines.push("SCRAPED WEBSITE CONTENT (use this to rebuild and improve the site):");
+  lines.push("");
+  if (hasCrawl) {
+    lines.push(crawlText);
+    lines.push("");
+  }
+  lines.push(
+    "Generate exactly 4 files in this format. Do NOT include markdown code blocks or triple backticks. Return ONLY the sections below:",
+  );
+  lines.push("");
+  lines.push("=== index.html ===");
+  lines.push("<html content here, use Tailwind CDN, responsive>");
+  lines.push("");
+  lines.push("=== styles.css ===");
+  lines.push("<css content>");
+  lines.push("");
+  lines.push("=== script.js ===");
+  lines.push("<js content>");
+  lines.push("");
+  lines.push("=== README.md ===");
+  lines.push("<readme content>");
 
-${crawlText}
-
-Generate exactly 4 files in this format. Do NOT include markdown code blocks or triple backticks. Return ONLY the sections below:
-
-=== index.html ===
-<html content here, use Tailwind CDN, responsive>
-
-=== styles.css ===
-<css content>
-
-=== script.js ===
-<js content>
-
-=== README.md ===
-<readme content>`;
+  return lines.join("\n");
 }
 
 export async function generateSiteWithKimi(input: GenerateInput ): Promise<GeneratedSiteSpec> {
     const apiKey = process.env.MOONSHOT_API_KEY;
     if (!apiKey) throw new Error("MOONSHOT_API_KEY is not set");
+
+    const systemPrompt = process.env.KIMI_SYSTEM_PROMPT;
+    if (!systemPrompt) {
+      throw new Error("KIMI_SYSTEM_PROMPT is not set");
+    }
 
     const chatUrl = `${KIMI_API_BASE.replace(/\/$/, "")}/chat/completions`;
     console.log("[generate] Kimi request start", { subdomain: input.request.subdomain, sitesCount: input.sites.length, url: chatUrl });
@@ -109,12 +125,11 @@ export async function generateSiteWithKimi(input: GenerateInput ): Promise<Gener
     const payload = {
       model: process.env.KIMI_MODEL || "moonshotai/kimi-k2.5",
       temperature: 0.7,
-      max_tokens: 20000,
+      max_tokens: 15000,
       messages: [
         {
           role: "system",
-          content:
-            "You are an expert senior frontend developer. Rebuild and improve the website using the scraped content provided. Create a modern SaaS marketing site with header, hero, features, CTA, footer. Use Tailwind CDN in index.html. Responsive, strong typography. Output ONLY the 4 sections in the exact format requested (=== filename === then content). No explanations, no markdown fences.",
+          content: systemPrompt,
         },
         {
           role: "user",
