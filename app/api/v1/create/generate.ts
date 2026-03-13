@@ -19,17 +19,21 @@ type GenerateInput = {
 
 const KIMI_FETCH_TIMEOUT_MS = 15 * 60 * 1000; // 15 minutes
 
+const KIMI_API_BASE =
+  process.env.KIMI_API_BASE || process.env.MOONSHOT_BASE_URL || "https://api.moonshot.cn/v1";
+
 export async function generateSiteWithKimi(input: GenerateInput ): Promise<GeneratedSiteSpec> {
     const apiKey = process.env.MOONSHOT_API_KEY;
     if (!apiKey) throw new Error("MOONSHOT_API_KEY is not set");
 
-    console.log("[generate] Kimi request start", { subdomain: input.request.subdomain, sitesCount: input.sites.length });
+    const chatUrl = `${KIMI_API_BASE.replace(/\/$/, "")}/chat/completions`;
+    console.log("[generate] Kimi request start", { subdomain: input.request.subdomain, sitesCount: input.sites.length, url: chatUrl });
 
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), KIMI_FETCH_TIMEOUT_MS);
 
     const payload = {
-      model: "moonshotai/kimi-k2.5",
+      model: process.env.KIMI_MODEL || "moonshotai/kimi-k2.5",
       temperature: 0.6,
       max_tokens: 15000,
       messages: [
@@ -45,14 +49,21 @@ export async function generateSiteWithKimi(input: GenerateInput ): Promise<Gener
       ],
     };
 
+    const isOpenRouter = chatUrl.includes("openrouter.ai");
+    const headers: Record<string, string> = {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+    };
+    if (isOpenRouter) {
+      headers["HTTP-Referer"] = process.env.OPENROUTER_REFERER || "https://wantace.org";
+      headers["X-Title"] = process.env.OPENROUTER_TITLE || "Buildbot";
+    }
+
     let response: Response;
     try {
-      response = await fetch("https://api.moonshot.cn/v1/chat/completions", {
+      response = await fetch(chatUrl, {
         method: "POST",
-        headers: {
-          Authorization: `Bearer ${apiKey}`,
-          "Content-Type": "application/json",
-        },
+        headers,
         body: JSON.stringify(payload),
         signal: controller.signal,
       });

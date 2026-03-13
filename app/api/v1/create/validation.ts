@@ -1,7 +1,11 @@
 import { z } from "zod";
 
 export const createRequestSchema = z.object({
-  subdomain: z.string().min(1, "Subdomain is required"),
+  subdomain: z
+    .string()
+    .min(1, "Subdomain is required")
+    .transform((s) => s.toLowerCase().trim())
+    .refine((s) => /^[a-z0-9-]+$/.test(s), "Subdomain must be lowercase letters, numbers, and hyphens only"),
   companyName: z.string().optional(),
   companyWebsite: z.string().url("Company website must be a valid URL"),
   competitorWebsites: z

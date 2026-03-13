@@ -56,6 +56,7 @@ export async function POST(request: Request) {
     console.log("[create] scrape done", { ok: scrapeOk, fail: scrapeFail, total: siteResults.length });
 
     let generated: GeneratedSiteSpec | null = null;
+    let generationError: string | null = null;
 
     console.log("[create] generate start");
     try {
@@ -65,7 +66,8 @@ export async function POST(request: Request) {
         });
         console.log("[create] generate done", { fileCount: generated?.files?.length ?? 0 });
     } catch (error) {
-        console.error("[create] generate failed", error instanceof Error ? error.message : error);
+        generationError = error instanceof Error ? error.message : "Generation failed";
+        console.error("[create] generate failed", generationError);
     }
 
     let deployResult: DeployResult | null = null;
@@ -95,6 +97,7 @@ export async function POST(request: Request) {
             deploy: deployResult
                 ? { liveUrl: deployResult.liveUrl, port: deployResult.port, nginxConfigured: deployResult.nginxConfigured }
                 : null,
+            generationError: generationError ?? null,
             deployError: deployError ?? null,
         },
         { status: 201 },

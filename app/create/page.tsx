@@ -6,7 +6,10 @@ import { z } from "zod";
 import { createProject, type CreatePayload } from "../../api/create.api";
 
 const formSchema = z.object({
-  subdomain: z.string().min(1, "Subdomain is required"),
+  subdomain: z
+    .string()
+    .min(1, "Subdomain is required")
+    .refine((s) => /^[a-z0-9-]+$/i.test(s), "Use only letters, numbers, and hyphens"),
   companyName: z.string().optional(),
   companyWebsite: z.string().url("Company website must be a valid URL"),
   clientRequirements: z.string().min(1, "Client requirements are required"),
@@ -32,16 +35,37 @@ export default function Create() {
   const [competitorError, setCompetitorError] = useState<string | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
   const [formSuccess, setFormSuccess] = useState<string | null>(null);
+  const [liveUrl, setLiveUrl] = useState<string | null>(null);
+  const [deployError, setDeployError] = useState<string | null>(null);
+  const [generationError, setGenerationError] = useState<string | null>(null);
 
   const mutation = useMutation({
     mutationFn: async (payload: CreatePayload) => createProject(payload),
-    onSuccess: () => {
-      setFormSuccess("Project created successfully.");
+    onSuccess: (data: {
+      deploy?: { liveUrl: string };
+      generationError?: string | null;
+      deployError?: string | null;
+    }) => {
       setFormError(null);
+      setLiveUrl(data.deploy?.liveUrl ?? null);
+      setDeployError(data.deployError ?? null);
+      setGenerationError(data.generationError ?? null);
+      setFormSuccess(
+        data.deploy?.liveUrl
+          ? "Project created and deployed."
+          : data.deployError
+            ? "Project generated but deploy failed."
+            : data.generationError
+              ? "Scraping done; generation failed."
+              : "Project created."
+      );
     },
     onError: (error: unknown) => {
       setFormError(error instanceof Error ? error.message : "Something went wrong.");
       setFormSuccess(null);
+      setLiveUrl(null);
+      setDeployError(null);
+      setGenerationError(null);
     },
   });
 
@@ -92,6 +116,9 @@ export default function Create() {
     setErrors({});
     setFormError(null);
     setFormSuccess(null);
+    setLiveUrl(null);
+    setDeployError(null);
+    setGenerationError(null);
 
     const parsed = formSchema.safeParse(values);
 
@@ -112,7 +139,7 @@ export default function Create() {
     const data = parsed.data;
 
     const payload: CreatePayload = {
-      subdomain: data.subdomain,
+      subdomain: data.subdomain.toLowerCase().trim(),
       companyName: data.companyName || undefined,
       companyWebsite: data.companyWebsite,
       competitorWebsites:
@@ -238,7 +265,29 @@ export default function Create() {
 
           {formError && <p className="text-sm text-[#B91C1C]">{formError}</p>}
           {formSuccess && <p className="text-sm text-[#059669]">{formSuccess}</p>}
+          {liveUrl && (
+            <p className="text-sm">
+              Live at:{" "}
+              <a
+                href={liveUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="font-medium text-[#BF4646] underline"
+              >
+                {liveUrl}
+              </a>
+            </p>
+          )}
+          {generationError && (
+            <p className="text-sm text-[#B91C1C]">Generation error: {generationError}</p>
+          )}
+          {deployError && (
+            <p className="text-sm text-[#B91C1C]">Deploy error: {deployError}</p>
+          )}
 
+          <p className="text-xs text-[#6B7280]">
+            This may take several minutes (scraping, AI generation, deploy).
+          </p>
           <button
             type="submit"
             disabled={mutation.isPending}
