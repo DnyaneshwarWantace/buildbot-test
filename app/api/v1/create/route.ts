@@ -3,6 +3,22 @@ import { createRequestSchema, type CreateRequest } from "./validation";
 import { scrapeSite, type StrippedSite } from "./scrape";
 import { generateSiteWithKimi, type GeneratedSiteSpec } from "./generate";
 import { deployProject, type DeployResult } from "./deploy";
+import fs from "node:fs/promises";
+import path from "node:path";
+
+const PROJECTS_BASE =
+  process.env.PROJECTS_BASE || path.join(process.cwd(), "projects");
+
+async function persistKimiRawResponse(params: {
+  subdomain: string;
+  raw: string;
+}): Promise<void> {
+  const binDir = path.join(PROJECTS_BASE, "bin");
+  const filePath = path.join(binDir, `${params.subdomain}.txt`);
+  await fs.mkdir(binDir, { recursive: true });
+  await fs.writeFile(filePath, params.raw, "utf8");
+  console.log("[create] saved raw kimi response", filePath);
+}
 
 export async function POST(request: Request) {
 
@@ -66,6 +82,18 @@ export async function POST(request: Request) {
     } catch (error) {
         generationError = error instanceof Error ? error.message : "Generation failed";
         console.error("[create] generate failed", generationError);
+
+        const raw = (error as any)?.rawKimiResponse;
+        if (typeof raw === "string" && raw.trim()) {
+          try {
+            await persistKimiRawResponse({ subdomain: data.subdomain, raw });
+          } catch (persistErr) {
+            console.error(
+              "[create] failed to save raw kimi response",
+              persistErr instanceof Error ? persistErr.message : persistErr,
+            );
+          }
+        }
     }
 
     let deployResult: DeployResult | null = null;

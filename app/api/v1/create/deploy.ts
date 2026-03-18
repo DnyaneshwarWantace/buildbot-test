@@ -146,19 +146,15 @@ export async function setupNginx(
   return true;
 }
 
-export async function deployProject(
-  subdomain: string,
-  spec: GeneratedSiteSpec,
-): Promise<DeployResult> {
+export async function deployProject( subdomain: string, spec: GeneratedSiteSpec ): Promise<DeployResult> {
+  
   console.log("[deploy] deployProject start", subdomain);
 
   await materializeProject(subdomain, spec);
   const { port } = await deployContainer(subdomain);
   const nginxConfigured = await setupNginx(subdomain, port);
 
-  const liveUrl = nginxConfigured
-    ? `http://${subdomain}.${DOMAIN}`
-    : `http://127.0.0.1:${port}`;
+  const liveUrl = nginxConfigured ? `http://${subdomain}.${DOMAIN}` : `http://127.0.0.1:${port}`;
 
   console.log("[deploy] deployProject done", { subdomain, liveUrl, port, nginxConfigured });
 

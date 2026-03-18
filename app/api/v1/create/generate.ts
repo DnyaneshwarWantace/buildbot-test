@@ -230,7 +230,9 @@ export async function generateSiteWithKimi(input: GenerateInput ): Promise<Gener
         console.log("[generate] Parsed section format (fallback)", { fileCount: spec.files.length });
       } catch (sectionErr) {
         console.log("[generate] Kimi response invalid JSON and missing section format");
-        throw new Error("Failed to parse Kimi response (expected JSON or === section === format)");
+        const err = new Error("Failed to parse Kimi response (expected JSON or === section === format)");
+        (err as any).rawKimiResponse = normalized;
+        throw err;
       }
     }
 

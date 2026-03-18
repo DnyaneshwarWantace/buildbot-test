@@ -32,42 +32,66 @@ const PROJECTS_DATA = [
 ];
 
 export default function Home() {
+
   const [composerValue, setComposerValue] = useState("");
+  const TABS = [
+    { label: "My Projects", value: "my-projects" },
+    { label: "Saved", value: "saved" },
+    { label: "Templates", value: "templates" },
+  ];
+  const [activeTab, setActiveTab] = useState(TABS[0].value);
 
   return (
     <div className="min-h-[200vh]">
-      <section className="sticky top-0 flex h-screen w-full items-center justify-center bg-[#F7F4EA]">
+
+      <section className="sticky top-0 flex h-screen w-full items-center justify-center infinite-grid-bg">
         <div className="w-full max-w-2xl px-6">
-          <ComposerInput
-            value={composerValue}
-            onChange={setComposerValue}
-          />
+
+          <ComposerInput value={composerValue} onChange={setComposerValue} />
+
         </div>
       </section>
 
-      <section className="relative z-10 min-h-screen bg-white py-12 rounded-[60px] shadow-lg">
-        
+      <section className="relative z-10 min-h-screen  py-12 rounded-[60px] shadow-lg bg-[#F7F4EA]">
+
         <div className="flex justify-center gap-4">
-          <button className="rounded-lg px-4 py-1 bg-[#7EACB5] text-white cursor-pointer shadow-lg">My Projects</button>
-          <button className="rounded-lg px-4 py-1 bg-[#7EACB5] text-white cursor-pointer">Saved</button>
-          <button className="rounded-lg px-4 py-1 bg-[#7EACB5] text-white cursor-pointer">Templates</button>
-        </div>
-        
-        <div className="flex flex-wrap gap-4 mt-12 mx-[5%]">
-          {PROJECTS_DATA.map((project) => (
-            <ProjectsCard
-              key={project.id}
-              imageUrl={project.imageUrl}
-              name={project.name}
-              description={project.description}
-              followers={project.followers}
-              projects={project.projects}
-            />
+          {TABS.map((tab) => (
+            <button key={tab.value}
+              className={`rounded-lg px-4 py-1 bg-[#7EACB5] text-white cursor-pointer ${activeTab === tab.value ? "bg-[#7EACB5] scale-110" : "bg-[#D9D9D9]"}`}
+              onClick={() => setActiveTab(tab.value)}
+            >
+              {tab.label}
+            </button>
           ))}
         </div>
-      
+
+        <div className="flex flex-wrap gap-4 mt-12 mx-[5%]">
+
+          {activeTab === "my-projects" && (
+              PROJECTS_DATA.map((project) => (
+                <ProjectsCard
+                  key={project.id}
+                  imageUrl={project.imageUrl}
+                  name={project.name}
+                  description={project.description}
+                  followers={project.followers}
+                  projects={project.projects}
+                />
+              ))
+          )}
+
+          {activeTab === "saved" && (
+            <div>Saved</div>
+          )}
+
+          {activeTab === "templates" && (
+            <div>Templates</div>
+          )}
+
+        </div>
+
       </section>
-    
+
     </div>
   );
 }

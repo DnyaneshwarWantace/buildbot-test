@@ -1,4 +1,5 @@
 import * as cheerio from "cheerio";
+import { crawlWithCloudflareHtml } from "./cloudflareCrawl";
 
 export type StrippedSite = {
   url: string;
@@ -66,36 +67,58 @@ function serializeNode(node: any, $: cheerio.CheerioAPI, baseUrl: string): strin
   return "";
 }
 
-const SCRAPE_FETCH_TIMEOUT_MS = 60 * 1000; // 60 seconds per URL
+const SCRAPE_FETCH_TIMEOUT_MS = 60 * 1000;
+
+function buildStructureFromHtml(html: string, baseUrl: string): string {
+    const $ = cheerio.load(html);
+    const body = $("body").get(0);
+    if (!body) return "";
+
+    const structure = (body.children ?? []).map((child: any) => serializeNode(child, $, baseUrl)).join("");
+    return structure;
+}
 
 export async function scrapeSite(url: string): Promise<StrippedSite> {
-  console.log("[scrape] start", url);
+
+  let html: string | null = null;
 
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), SCRAPE_FETCH_TIMEOUT_MS);
 
-  let response: Response;
   try {
-    response = await fetch(url, { signal: controller.signal });
+    const response = await fetch(url, { signal: controller.signal });
+    clearTimeout(timeoutId);
+    html = await response.text();
   } catch (err) {
     clearTimeout(timeoutId);
     if (err instanceof Error && err.name === "AbortError") {
       console.log("[scrape] timeout", url);
-      throw new Error(`Scrape timed out: ${url}`);
+    } else {
+      console.log("[scrape] fetch error", url, err instanceof Error ? err.message : String(err));
     }
-    throw err;
   }
-  clearTimeout(timeoutId);
 
-  const html = await response.text();
+  if (html) {
+    const structure = buildStructureFromHtml(html, url);
+    if (structure) {
+      console.log("[scrape] done (direct)", url, "structure length:", structure.length);
+      return { url, structure };
+    }
+    console.log("[scrape] direct scrape returned empty structure, trying Cloudflare", url);
+  } else {
+    console.log("[scrape] direct scrape failed, trying Cloudflare", url);
+  }
 
-  const $ = cheerio.load(html);
+  const cloudflareHtml = await crawlWithCloudflareHtml(url);
 
-  const body = $("body").get(0);
+  if (cloudflareHtml) {
+    const structure = buildStructureFromHtml(cloudflareHtml, url);
+    if (structure) {
+      console.log("[scrape] done (Cloudflare fallback)", url, "structure length:", structure.length);
+      return { url, structure };
+    }
+  }
 
-  const structure = body ? (body.children ?? []).map((child: any) => serializeNode(child, $, url)).join("") : "";
-
-  console.log("[scrape] done", url, "structure length:", structure.length);
-  return { url, structure };
+  throw new Error(`Scrape failed for ${url}: no content from direct fetch or Cloudflare crawl`);
+  
 }
-
