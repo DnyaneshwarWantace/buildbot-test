@@ -1,53 +1,21 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { execSync } from "node:child_process";
-import net from "node:net";
+import { exec } from "node:child_process";
+import { promisify } from "node:util";
 import type { GeneratedSiteSpec } from "./generate";
+
+const execAsync = promisify(exec);
 
 const PROJECTS_BASE =
   process.env.PROJECTS_BASE || path.join(process.cwd(), "projects");
 const DOMAIN = process.env.DOMAIN || "wantace.org";
-const PORT_START = Number(process.env.PORT_START) || 5000;
-const PORT_END = Number(process.env.PORT_END) || 6000;
 const NGINX_SITES_AVAILABLE = process.env.NGINX_SITES_AVAILABLE || "";
 
-const STATIC_DOCKERFILE = `FROM nginx:alpine
-COPY . /usr/share/nginx/html
-EXPOSE 80
-`;
-
 export type DeployResult = {
-  port: number;
+  port: null;
   liveUrl: string;
   nginxConfigured: boolean;
 };
-
-function getFreePort(start: number, end: number): Promise<number> {
-  return new Promise((resolve, reject) => {
-    function tryPort(port: number) {
-      if (port >= end) {
-        reject(new Error("No free ports available"));
-        return;
-      }
-      const server = net.createServer();
-      server.once("error", () => {
-        server.close();
-        tryPort(port + 1);
-      });
-      server.once("listening", () => {
-        server.close(() => resolve(port));
-      });
-      server.listen(port, "127.0.0.1");
-    }
-    tryPort(start);
-  });
-}
-
-function runCommand(command: string, cwd?: string): void {
-  const options: { shell: string; cwd?: string } = { shell: "/bin/sh" };
-  if (cwd) options.cwd = cwd;
-  execSync(command, options);
-}
 
 function resolveSafePath(projectPath: string, filePath: string): string {
   if (path.isAbsolute(filePath)) {
@@ -78,88 +46,56 @@ export async function materializeProject(
     console.log("[deploy] wrote file", file.path);
   }
 
-  const dockerfilePath = path.join(projectPath, "Dockerfile");
-  await fs.writeFile(dockerfilePath, STATIC_DOCKERFILE, "utf8");
   console.log("[deploy] materializeProject done", projectPath);
-
   return projectPath;
 }
 
-export async function deployContainer(
-  subdomain: string,
-): Promise<{ port: number }> {
-  const projectPath = path.join(PROJECTS_BASE, subdomain);
-  const imageName = subdomain;
-  const containerName = subdomain;
-
-  console.log("[deploy] docker build start", { subdomain, projectPath });
-  runCommand(`docker build -t ${imageName} .`, projectPath);
-  console.log("[deploy] docker build done", subdomain);
-
-  try {
-    runCommand(`docker rm -f ${containerName}`);
-    console.log("[deploy] removed existing container", containerName);
-  } catch {
-    // ignore if container did not exist
-  }
-
-  const port = await getFreePort(PORT_START, PORT_END);
-  console.log("[deploy] docker run", { subdomain, port });
-  runCommand(
-    `docker run -d -p ${port}:80 --name ${containerName} ${imageName}`,
-    undefined,
-  );
-  console.log("[deploy] container running", { containerName, port });
-
-  return { port };
-}
-
-export async function setupNginx(
-  subdomain: string,
-  port: number,
-): Promise<boolean> {
+export async function setupNginx(subdomain: string): Promise<boolean> {
   if (!NGINX_SITES_AVAILABLE) {
     console.log("[deploy] nginx skip (NGINX_SITES_AVAILABLE not set)");
     return false;
   }
 
-  console.log("[deploy] nginx setup start", { subdomain, port });
+  const projectPath = path.join(PROJECTS_BASE, subdomain);
+  console.log("[deploy] nginx setup start", { subdomain, projectPath });
+
   const serverBlock = `server {
     listen 80;
     server_name ${subdomain}.${DOMAIN};
 
+    root ${projectPath};
+    index index.html;
+
     location / {
-        proxy_pass http://127.0.0.1:${port};
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
+        try_files $uri $uri/ /index.html;
     }
 }
 `;
 
   const configPath = path.join(NGINX_SITES_AVAILABLE, subdomain);
   await fs.writeFile(configPath, serverBlock, "utf8");
-  runCommand(`ln -sf ${configPath} /etc/nginx/sites-enabled/${subdomain}`);
-  runCommand("nginx -t");
-  runCommand("systemctl reload nginx");
+  await execAsync(`ln -sf ${configPath} /etc/nginx/sites-enabled/${subdomain}`);
+  await execAsync("nginx -t");
+  await execAsync("systemctl reload nginx");
   console.log("[deploy] nginx setup done", subdomain);
 
   return true;
 }
 
-export async function deployProject( subdomain: string, spec: GeneratedSiteSpec ): Promise<DeployResult> {
-  
+export async function deployProject(subdomain: string, spec: GeneratedSiteSpec): Promise<DeployResult> {
   console.log("[deploy] deployProject start", subdomain);
 
   await materializeProject(subdomain, spec);
-  const { port } = await deployContainer(subdomain);
-  const nginxConfigured = await setupNginx(subdomain, port);
+  const nginxConfigured = await setupNginx(subdomain);
 
-  const liveUrl = nginxConfigured ? `http://${subdomain}.${DOMAIN}` : `http://127.0.0.1:${port}`;
+  const liveUrl = nginxConfigured
+    ? `http://${subdomain}.${DOMAIN}`
+    : `http://localhost (nginx not configured)`;
 
-  console.log("[deploy] deployProject done", { subdomain, liveUrl, port, nginxConfigured });
+  console.log("[deploy] deployProject done", { subdomain, liveUrl, nginxConfigured });
 
   return {
-    port,
+    port: null,
     liveUrl,
     nginxConfigured,
   };
