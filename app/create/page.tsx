@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { useMutation } from "@tanstack/react-query";
 import { z } from "zod";
-import { createProject, type CreatePayload } from "../../api/create.api";
+import { createProject, getJobStatus, type CreatePayload, type JobStatus } from "../../api/create.api";
 import Popup from "reactjs-popup";
 
 const formSchema = z.object({
@@ -40,52 +40,56 @@ export default function Create() {
   const [deployError, setDeployError] = useState<string | null>(null);
   const [generationError, setGenerationError] = useState<string | null>(null);
   const [popupOpen, setPopupOpen] = useState(false);
+  const [jobProgress, setJobProgress] = useState<number | null>(null);
+  const [jobState, setJobState] = useState<string | null>(null);
+
+  const pollJob = (jobId: string) => {
+    const interval = setInterval(async () => {
+      try {
+        const status: JobStatus = await getJobStatus(jobId);
+        setJobProgress(typeof status.progress === "number" ? status.progress : null);
+        setJobState(status.state);
+
+        if (status.state === "completed") {
+          clearInterval(interval);
+          const result = status.result;
+          setLiveUrl(result?.liveUrl ?? null);
+          setDeployError(result?.deployError ?? null);
+          setGenerationError(result?.generationError ?? null);
+          setFormSuccess(
+            result?.liveUrl
+              ? "Project created and deployed."
+              : result?.deployError
+                ? "Project generated but deploy failed."
+                : result?.generationError
+                  ? "Scraping done; generation failed."
+                  : "Project created."
+          );
+          if (result?.liveUrl) {
+            try {
+              window.open(result.liveUrl, "_blank", "noopener,noreferrer");
+            } catch {
+              setPopupOpen(true);
+            }
+          }
+        } else if (status.state === "failed") {
+          clearInterval(interval);
+          setFormError(status.failedReason ?? "Job failed.");
+        }
+      } catch {
+        clearInterval(interval);
+        setFormError("Failed to get job status.");
+      }
+    }, 2000);
+  };
 
   const mutation = useMutation({
     mutationFn: async (payload: CreatePayload) => createProject(payload),
-    onSuccess: (response: {
-      success: boolean;
-      status: number;
-      message: string;
-      data: { subdomain: string; companyWebsite: string; clientRequirements: string };
-      deploy: {
-        liveUrl: string | null;
-        port: number | null;
-        nginxConfigured: boolean;
-        generationError: string | null;
-        deployError: string | null;
-      } | null;
-      stats: {
-        prompt_tokens: number;
-        completion_tokens: number;
-        total_tokens: number;
-      } | null;
-      time: {
-        total_time: number;
-      };
-    }) => {
-      const deploy = response.deploy;
+    onSuccess: ({ jobId }) => {
       setFormError(null);
-      setLiveUrl(deploy?.liveUrl ?? null);
-      setDeployError(deploy?.deployError ?? null);
-      setGenerationError(deploy?.generationError ?? null);
-      setFormSuccess(
-        deploy?.liveUrl
-          ? "Project created and deployed."
-          : deploy?.deployError
-            ? "Project generated but deploy failed."
-            : deploy?.generationError
-              ? "Scraping done; generation failed."
-              : "Project created."
-      );
-
-      if (deploy?.liveUrl) {
-        try {
-          window.open(deploy.liveUrl, "_blank", "noopener,noreferrer");
-        } catch {
-          setPopupOpen(true);
-        }
-      }
+      setJobProgress(0);
+      setJobState("waiting");
+      pollJob(jobId);
     },
     onError: (error: unknown) => {
       setFormError(error instanceof Error ? error.message : "Something went wrong.");
@@ -93,6 +97,8 @@ export default function Create() {
       setLiveUrl(null);
       setDeployError(null);
       setGenerationError(null);
+      setJobProgress(null);
+      setJobState(null);
     },
   });
 
@@ -338,15 +344,29 @@ export default function Create() {
             <p className="text-sm text-[#B91C1C]">Deploy error: {deployError}</p>
           )}
 
+          {jobProgress !== null && jobState !== "completed" && jobState !== "failed" && (
+            <div className="space-y-1">
+              <div className="flex justify-between text-xs text-[#6B7280]">
+                <span>{jobState === "waiting" ? "Queued..." : jobState === "active" ? "Processing..." : jobState ?? "Working..."}</span>
+                <span>{jobProgress}%</span>
+              </div>
+              <div className="h-1.5 w-full rounded-full bg-[#F3F4F6]">
+                <div
+                  className="h-1.5 rounded-full bg-[#BF4646] transition-all duration-500"
+                  style={{ width: `${jobProgress}%` }}
+                />
+              </div>
+            </div>
+          )}
           <p className="text-xs text-[#6B7280]">
             This may take several minutes (scraping, AI generation, deploy).
           </p>
           <button
             type="submit"
-            disabled={mutation.isPending}
+            disabled={mutation.isPending || (jobState !== null && jobState !== "completed" && jobState !== "failed")}
             className="mt-2 inline-flex w-full items-center justify-center rounded-lg bg-[#BF4646] px-4 py-2.5 text-sm font-medium text-white shadow-sm transition disabled:opacity-60 disabled:cursor-not-allowed cursor-pointer"
           >
-            {mutation.isPending ? "Creating..." : "Create project"}
+            {mutation.isPending ? "Queuing..." : jobState === "active" ? "Generating..." : jobState === "waiting" ? "Waiting in queue..." : "Create project"}
           </button>
         </form>
       </div>
