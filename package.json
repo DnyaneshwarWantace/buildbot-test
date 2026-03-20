@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "worker": "tsx worker.ts"
+    "worker": "tsx --env-file=.env worker.ts"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.90.21",

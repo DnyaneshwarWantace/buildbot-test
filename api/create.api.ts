@@ -20,10 +20,13 @@ export type JobStatus = {
     total_time: number;
   } | null;
   failedReason: string | null;
+  logs: string[];
 };
 
+const BASE = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
+
 export async function createProject(payload: CreatePayload): Promise<{ jobId: string }> {
-  const response = await fetch("/api/v1/create", {
+  const response = await fetch(`${BASE}/api/v1/create`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
@@ -42,7 +45,7 @@ export async function createProject(payload: CreatePayload): Promise<{ jobId: st
 }
 
 export async function getJobStatus(jobId: string): Promise<JobStatus> {
-  const response = await fetch(`/api/v1/status/${jobId}`);
+  const response = await fetch(`${BASE}/api/v1/status/${jobId}`);
   const data = await response.json().catch(() => null);
 
   if (!response.ok) {

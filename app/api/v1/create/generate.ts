@@ -25,6 +25,7 @@ type GenerateInput = {
 };
 
 const KIMI_FETCH_TIMEOUT_MS = 20 * 60 * 1000;
+const KIMI_MAX_RETRIES = 2;
 
 const KIMI_API_BASE = process.env.KIMI_API_BASE || process.env.MOONSHOT_BASE_URL || "https://api.moonshot.cn/v1";
 
@@ -45,10 +46,13 @@ function extractSection(content: string, filename: string): string | null {
   return m ? m[1].trim() : null;
 }
 
+// README.md is optional — the site works without it
+const REQUIRED_SECTION_FILES = ["index.html", "styles.css", "script.js"] as const;
+
 function parseSectionFormat(rawContent: string): GeneratedSiteSpec {
   const content = rawContent.replace(/```/g, "").trim();
 
-  for (const name of SECTION_FILES) {
+  for (const name of REQUIRED_SECTION_FILES) {
     const headerRegex = new RegExp(`===\\s*${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*===`, "i");
     if (!headerRegex.test(content)) {
       throw new Error(`AI output missing section: ${name}`);
@@ -114,17 +118,8 @@ function buildUserPrompt(input: GenerateInput): string {
   return lines.join("\n");
 }
 
-export async function generateSiteWithKimi(input: GenerateInput ): Promise<GeneratedSiteSpec> {
-    const apiKey = process.env.MOONSHOT_API_KEY;
-    if (!apiKey) throw new Error("MOONSHOT_API_KEY is not set");
-
-    const systemPrompt = process.env.KIMI_SYSTEM_PROMPT;
-    if (!systemPrompt) {
-      throw new Error("KIMI_SYSTEM_PROMPT is not set");
-    }
-
+async function attemptGenerate(input: GenerateInput, apiKey: string, systemPrompt: string): Promise<GeneratedSiteSpec> {
     const chatUrl = `${KIMI_API_BASE.replace(/\/$/, "")}/chat/completions`;
-    console.log("[generate] Kimi request start", { subdomain: input.request.subdomain, sitesCount: input.sites.length, url: chatUrl });
 
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), KIMI_FETCH_TIMEOUT_MS);
@@ -134,14 +129,8 @@ export async function generateSiteWithKimi(input: GenerateInput ): Promise<Gener
       temperature: 0.7,
       max_tokens: 15000,
       messages: [
-        {
-          role: "system",
-          content: systemPrompt,
-        },
-        {
-          role: "user",
-          content: buildUserPrompt(input),
-        },
+        { role: "system", content: systemPrompt },
+        { role: "user", content: buildUserPrompt(input) },
       ],
     };
 
@@ -165,27 +154,27 @@ export async function generateSiteWithKimi(input: GenerateInput ): Promise<Gener
       });
     } catch (err) {
       clearTimeout(timeoutId);
-      if (err instanceof Error && err.name === "AbortError") {
-        console.log("[generate] Kimi request timed out", KIMI_FETCH_TIMEOUT_MS);
-        throw new Error("Kimi request timed out");
-      }
+      if (err instanceof Error && err.name === "AbortError") throw new Error("Kimi request timed out");
       throw err;
     }
     clearTimeout(timeoutId);
 
+    // Use text() first — response.json() throws on truncated bodies, hiding the real error
+    const bodyText = await response.text().catch(() => "");
+
     if (!response.ok) {
-      const text = await response.text().catch(() => "");
-      console.log("[generate] Kimi request failed", { status: response.status, statusText: response.statusText });
-      throw new Error(
-        `Kimi request failed: ${response.status} ${response.statusText} ${text}`,
-      );
+      throw new Error(`Kimi request failed: ${response.status} ${response.statusText} ${bodyText.slice(0, 200)}`);
     }
 
-    const data = (await response.json()) as any;
-    const rawContent = data?.choices?.[0]?.message?.content;
+    let data: any;
+    try {
+      data = JSON.parse(bodyText);
+    } catch {
+      throw new Error(`Kimi API returned malformed JSON (truncated response): ${bodyText.slice(0, 100)}`);
+    }
 
+    const rawContent = data?.choices?.[0]?.message?.content;
     if (!rawContent || typeof rawContent !== "string") {
-      console.log("[generate] Kimi response missing content");
       throw new Error("Kimi response missing content");
     }
 
@@ -193,7 +182,7 @@ export async function generateSiteWithKimi(input: GenerateInput ): Promise<Gener
 
     const usageRaw = data?.usage;
     const usage: GeneratedSiteUsage | null =
-      usageRaw && (typeof usageRaw === "object")
+      usageRaw && typeof usageRaw === "object"
         ? {
             prompt_tokens: Number(usageRaw.prompt_tokens ?? 0),
             completion_tokens: Number(usageRaw.completion_tokens ?? 0),
@@ -201,50 +190,69 @@ export async function generateSiteWithKimi(input: GenerateInput ): Promise<Gener
           }
         : null;
 
-    if (usage) {
-      console.log("[generate] usage", usage);
-    }
+    if (usage) console.log("[generate] usage", usage);
 
     let spec: GeneratedSiteSpec;
-
     try {
       const parsed = JSON.parse(normalized);
       if (Array.isArray(parsed.files) && typeof parsed.dockerfile === "string") {
-        const files: GeneratedSiteFile[] = parsed.files.map((file: any) => ({
-          path: String(file.path),
-          content: String(file.content ?? ""),
-        }));
         spec = {
-          files,
+          files: parsed.files.map((file: any) => ({ path: String(file.path), content: String(file.content ?? "") })),
           dockerfile: parsed.dockerfile,
           startCommand: parsed.startCommand ? String(parsed.startCommand) : undefined,
         };
-        console.log("[generate] Parsed JSON response", { fileCount: files.length });
+        console.log("[generate] Parsed JSON response", { fileCount: spec.files.length });
       } else {
         spec = parseSectionFormat(normalized);
-        console.log("[generate] Parsed section format (fallback)", { fileCount: spec.files.length });
+        console.log("[generate] Parsed section format (JSON fallback)", { fileCount: spec.files.length });
       }
     } catch {
       try {
         spec = parseSectionFormat(normalized);
-        console.log("[generate] Parsed section format (fallback)", { fileCount: spec.files.length });
+        console.log("[generate] Parsed section format", { fileCount: spec.files.length });
       } catch (sectionErr) {
-        console.log("[generate] Kimi response invalid JSON and missing section format");
         const err = new Error("Failed to parse Kimi response (expected JSON or === section === format)");
         (err as any).rawKimiResponse = normalized;
         throw err;
       }
     }
 
-    if (!spec.files.length || !spec.files.some((f) => f.path === "index.html" && f.content.trim())) {
+    if (!spec.files.some((f) => f.path === "index.html" && f.content.trim())) {
       throw new Error("Kimi response missing valid index.html");
     }
 
-    if (usage) {
-      spec.usage = usage;
+    if (usage) spec.usage = usage;
+    return spec;
+}
+
+export async function generateSiteWithKimi(input: GenerateInput): Promise<GeneratedSiteSpec> {
+    const apiKey = process.env.MOONSHOT_API_KEY;
+    if (!apiKey) throw new Error("MOONSHOT_API_KEY is not set");
+
+    const systemPrompt = process.env.KIMI_SYSTEM_PROMPT;
+    if (!systemPrompt) throw new Error("KIMI_SYSTEM_PROMPT is not set");
+
+    console.log("[generate] Kimi request start", { subdomain: input.request.subdomain, sitesCount: input.sites.length });
+
+    let lastErr: Error = new Error("Unknown error");
+    for (let attempt = 1; attempt <= KIMI_MAX_RETRIES + 1; attempt++) {
+      if (attempt > 1) {
+        const delay = attempt * 3000;
+        console.log(`[generate] retry ${attempt - 1}/${KIMI_MAX_RETRIES} after ${delay}ms`, { subdomain: input.request.subdomain, reason: lastErr.message });
+        await new Promise((r) => setTimeout(r, delay));
+      }
+      try {
+        const spec = await attemptGenerate(input, apiKey, systemPrompt);
+        console.log("[generate] Kimi request done", { fileCount: spec.files.length, attempt });
+        return spec;
+      } catch (err) {
+        lastErr = err instanceof Error ? err : new Error(String(err));
+        console.error(`[generate] attempt ${attempt} failed`, lastErr.message);
+      }
     }
 
-    console.log("[generate] Kimi request done", { fileCount: spec.files.length });
-    return spec;
+    const finalErr = new Error(`Generation failed after ${KIMI_MAX_RETRIES + 1} attempts: ${lastErr.message}`);
+    (finalErr as any).rawKimiResponse = (lastErr as any).rawKimiResponse;
+    throw finalErr;
 }
 

@@ -6,6 +6,41 @@ import type { GeneratedSiteSpec } from "./generate";
 
 const execAsync = promisify(exec);
 
+// Debounced nginx reload — batches all concurrent deployments into a single reload.
+// Without this, 100 parallel jobs would each call `systemctl reload nginx` simultaneously,
+// causing race conditions and thrashing.
+let reloadInProgress = false;
+let reloadPending = false;
+
+async function reloadNginxOnce(): Promise<void> {
+  if (reloadInProgress) {
+    reloadPending = true;
+    // Wait for the in-progress reload to finish
+    await new Promise<void>((resolve) => {
+      const interval = setInterval(() => {
+        if (!reloadInProgress) {
+          clearInterval(interval);
+          resolve();
+        }
+      }, 50);
+    });
+    return;
+  }
+  reloadInProgress = true;
+  reloadPending = false;
+  try {
+    await execAsync("nginx -t");
+    await execAsync("systemctl reload nginx");
+  } finally {
+    reloadInProgress = false;
+    if (reloadPending) {
+      // One more reload to catch any configs written while we were reloading
+      reloadPending = false;
+      await reloadNginxOnce();
+    }
+  }
+}
+
 const PROJECTS_BASE =
   process.env.PROJECTS_BASE || path.join(process.cwd(), "projects");
 const DOMAIN = process.env.DOMAIN || "wantace.org";
@@ -75,8 +110,7 @@ export async function setupNginx(subdomain: string): Promise<boolean> {
   const configPath = path.join(NGINX_SITES_AVAILABLE, subdomain);
   await fs.writeFile(configPath, serverBlock, "utf8");
   await execAsync(`ln -sf ${configPath} /etc/nginx/sites-enabled/${subdomain}`);
-  await execAsync("nginx -t");
-  await execAsync("systemctl reload nginx");
+  await reloadNginxOnce();
   console.log("[deploy] nginx setup done", subdomain);
 
   return true;

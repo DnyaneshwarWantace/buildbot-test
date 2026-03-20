@@ -17,11 +17,14 @@ export async function GET(
   const result = job.returnvalue ?? null;
   const failedReason = job.failedReason ?? null;
 
+  const { logs } = await createQueue.getJobLogs(jobId, 0, 200);
+
   return NextResponse.json({
     jobId,
-    state,   // "waiting" | "active" | "completed" | "failed"
-    progress, // 0-100
-    result,  // populated when state === "completed"
+    state,
+    progress,
+    result,
     failedReason,
+    logs: logs ?? [],
   });
 }
