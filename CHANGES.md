@@ -14,6 +14,82 @@ A full comparison of what changed between the original Docker-based architecture
 | Deploy time | ~30s (docker build) | ~1s (write files + nginx reload) |
 | Port management | Scanned 5000-6000 per site | No ports needed |
 | Progress tracking | None — user waited blind | Live 0→100% progress bar |
+| Job logs | None | Timestamped per-step logs in Redis |
+| Nginx reload | One reload per deploy | Debounced — batches concurrent reloads |
+| Meta tracking | None | Writes `meta.json` per site (timing, tokens, URLs) |
+| Worker | Inline in API route | Separate PM2 process |
+
+---
+
+## Extra improvements in buildbot-v2 (vs our version)
+
+### Debounced Nginx reload (`deploy.ts`)
+
+When 10 jobs deploy simultaneously, all 10 would call `systemctl reload nginx` at the same time — causing race conditions. buildbot-v2 added a debounced reload:
+
+```
+Job 1 reloads nginx → in progress
+Job 2 arrives       → marks pending, waits
+Job 3 arrives       → marks pending, waits
+Job 1 finishes      → one more reload to catch jobs 2 & 3
+```
+
+This prevents nginx thrashing under concurrent load.
+
+### Detailed timestamped job logs (`lib/queue.ts`)
+
+Every step of every job is logged with timestamps into Redis via `job.log()`:
+
+```
+[10:23:01.123] Job started for subdomain: mysite
+[10:23:01.124] Scraping 2 URL(s)...
+[10:23:01.124]   → https://example.com
+[10:23:03.456]   ✓ Scraped https://example.com (12,345 chars)
+[10:23:03.457] Scraping done — 2/2 succeeded in 2.3s
+[10:23:03.458] Sending to Kimi AI (model: moonshotai/kimi-k2.5)...
+[10:24:11.234] AI generation complete:
+[10:24:11.234]   Files: index.html, styles.css, script.js, README.md
+[10:24:11.234]   Tokens: 22,420 total (11,452 prompt + 10,968 completion)
+[10:24:11.235] Generation stage: 67.8s
+[10:24:11.240] Deploying 4 files to /var/www/sites/mysite/
+[10:24:11.890] Site live at: http://mysite.wantace.org
+[10:24:11.890] Deploy stage: 0.65s
+[10:24:11.891] Done. Total time: 70.8s
+```
+
+Queryable via BullMQ dashboard or `job.logs`.
+
+### `meta.json` per site
+
+After every successful deploy, writes a `meta.json` alongside the site files:
+
+```json
+{
+  "subdomain": "mysite",
+  "companyWebsite": "https://example.com",
+  "liveUrl": "http://mysite.wantace.org",
+  "createdAt": 1742123456789,
+  "scrapeTime": 2.3,
+  "generateTime": 67.8,
+  "deployTime": 0.65,
+  "totalTime": 70.8,
+  "tokens": {
+    "prompt": 11452,
+    "completion": 10968,
+    "total": 22420
+  }
+}
+```
+
+Useful for a dashboard showing all generated sites with stats.
+
+---
+| Deploy method | Docker container per site | Nginx static file serving |
+| API response | Returns result after 60-120s | Returns `{ jobId }` instantly |
+| Concurrency | 1 at a time (blocking) | 10 at a time (configurable) |
+| Deploy time | ~30s (docker build) | ~1s (write files + nginx reload) |
+| Port management | Scanned 5000-6000 per site | No ports needed |
+| Progress tracking | None — user waited blind | Live 0→100% progress bar |
 | Worker | Inline in API route | Separate PM2 process |
 
 ---
